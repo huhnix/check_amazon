@@ -1,0 +1,181 @@
+#!/bin/bash
+#
+#    Program : check_amazon
+#            
+#    Authors : Antony Stone <Antony.Stone@Open.Source.IT>
+#            : Heike Jurzik <jurzik@linux-journalist.com>
+#            
+#    Purpose : Nagios/Icinga plugin to check Amazon.co.uk for product prices
+#            
+# Parameters : --help
+#            : --version
+#            : -p
+#            : -w
+#            : -c
+#            
+#    Returns : Standard Nagios/Icinga status_* codes as defined in 
+#            : /usr/lib/nagios/plugins/utils.sh
+#            
+#    Licence : GPLv2
+#            
+#      Notes : A warning means:  "The price is near to what you'd like 
+#            : to pay for it."
+#            : A critical alert means:  "It's below what you want to 
+#            : pay for it, so buy it!" 
+#            : Therefore you should set the critical threshold (with -c) to
+#            : the maximum price you're prepared to pay for the item, and
+#            : the warning threshold (with -w) to something like 10% to 20% more
+#            : than this.  Omitting the warning threshold is perfectly reasonable,
+#            : though, and means you will only get an alert when the price has
+#            : reduced to below your target.
+#            : See --help for details
+#============:==============================================================
+
+PROGNAME=`basename $0`
+PROGPATH="/usr/lib/nagios/plugins/"
+REVISION=`echo '$Revision: 1.0 $' | sed -e 's/[^0-9.]//g'`
+
+. $PROGPATH/utils.sh
+
+debug=0
+
+print_usage() {
+        echo "Usage: $PROGNAME -p productid [-w warning] [-c critical]"
+        echo "		-p	Amazon product ID"
+        echo "		-w	(optional) warning threshold"
+        echo "		-c	(optional) critical threshold"
+	echo ""
+	echo "Usage: $PROGNAME --help"
+        echo "Usage: $PROGNAME --version"
+}
+
+print_help() {
+	print_revision $PROGNAME $REVISION
+	echo ""
+	echo "Nagios/Icinga plugin to check prices of Amazon.co.uk items."
+	echo ""
+	print_usage
+	echo ""
+	echo "Amazon.co.uk price check. © Antony Stone, 2012"
+	echo ""
+	exit 0
+}
+
+WARN=0
+CRIT=0
+
+# If we have arguments, process them.
+
+while test -n "$1"; do
+        case "$1" in
+                --help|-h)
+                    print_help
+                    exit $STATE_OK
+                    ;;
+                --version|-V)
+                    print_revision $PROGNAME $REVISION
+                    exit $STATE_OK
+                    ;;
+		-p)
+                    PRODUCTID=$2;
+                    shift;
+                    ;;
+                -c)
+                    CRIT=$2
+                    shift;
+                    ;;
+                -w)
+                    WARN=$2;
+                    shift;
+                    ;;
+                *)
+        	echo "Unknown argument: $1"
+                    print_usage
+                    exit $STATE_UNKNOWN
+                    ;;
+        esac
+        shift
+done
+
+# If the product ID is missing, tell users how to run the script.
+
+if [ -z "$PRODUCTID" ]
+then
+  echo "No product ID found."
+  print_usage
+  exit $STATE_UNKNOWN
+fi
+
+STATUS=$STATE_OK
+
+# Use lynx to retrieve the page for a certain item (defined by the 
+# product ID = ASIN). Somewhere in that page is the information
+# about the full name and the price; use grep as a filter.
+
+title=`lynx -source http://www.amazon.co.uk/gp/product/$PRODUCTID | grep id=.productTitle | tr '<>' '~' | cut -d'~' -f3`
+if [ -z "$title" ]
+then
+  title=`lynx -source http://www.amazon.co.uk/gp/product/$PRODUCTID | sed 's/^ \+//g' | grep -v "^$" | grep -A1 id=.productTitle | tail -n1`
+  price=`lynx -dump http://www.amazon.co.uk/gp/product/$PRODUCTID | grep "Price: " | tr -s ' ' | cut -d':' -f2 | cut -d' ' -f2 | tr -dc [0-9.]`
+  if [ "$debug" = "1" ]
+  then
+    price1=`lynx -dump http://www.amazon.co.uk/gp/product/$PRODUCTID | grep "Price: "`
+    price2=`echo "$price1" | tr -s ' ' | cut -d':' -f2`
+    price3=`echo "$price2" | cut -d' ' -f2`
+    price4=`echo "$price3" | tr -dc [0-9.]`
+    echo "price1=$price1"
+    echo "price2=$price2"
+    echo "price3=$price3"
+    echo "price4=$price4"
+  fi
+else
+  price=`lynx -source http://www.amazon.co.uk/gp/product/$PRODUCTID | grep "a-size-medium a-color-price offer-price a-text-normal" | tr '<>' '~' | cut -d'~' -f3 | tr -dc [0-9.]`
+  if [ "$debug" = "1" ]
+  then
+    price1=`lynx -source http://www.amazon.co.uk/gp/product/$PRODUCTID | grep "a-size-medium a-color-price offer-price a-text-normal"`
+    price2=`echo "$price1" | tr '<>' '~'`
+    price3=`echo "$price2" | cut -d'~' -f3`
+    price4=`echo "$price3" | tr -dc [0-9.]`
+    echo "price1=$price1"
+    echo "price2=$price2"
+    echo "price3=$price3"
+    echo "price4=$price4"
+  fi
+fi
+
+# Prices from Amazon.co.uk are in pounds sterling (GBP):
+perfdata="Price=$price;$WARN;$CRIT"
+
+if [ "$debug" = "1" ]
+then
+  echo "Checking $PRODUCTID at Amazon"
+  echo "Warning alert @ $WARN"
+  echo "Critical alert @ $CRIT"
+  echo "Result = $price"
+  echo "Item = $title"
+fi
+
+info="$price $title"
+
+MSG="OK: $info|$perfdata"
+
+# First comparison: if the output of the echo command is 1, the price 
+# is less than the warning value (set by the -w parameter)
+
+if [ "`echo \"$price < $WARN\" | bc`" = "1" ]
+then
+  MSG="WARNING: $info, Warning threshold $WARN|$perfdata"
+  STATUS=$STATE_WARNING
+fi
+
+# Second comparison: if the output of the command is 1, the price 
+# is less than the critical value (set by the -c parameter)
+
+if [ "`echo \"$price < $CRIT\" | bc`" = "1" ]
+then
+  MSG="CRITICAL: $info, Critical threshold $CRIT|$perfdata"
+  STATUS=$STATE_CRITICAL
+fi
+
+echo "$MSG"
+exit $STATUS
